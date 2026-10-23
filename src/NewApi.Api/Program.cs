@@ -1,41 +1,128 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using NewApi.Api.Data;
+using Scalar.AspNetCore;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddHealthChecks();
+
+// Read the provider lazily, so test and host configuration overrides are honoured
+static bool IsSqlite(IConfiguration config) =>
+    string.Equals(config["Database:Provider"] ?? "SqlServer", "Sqlite", StringComparison.OrdinalIgnoreCase);
+
+builder.Services.AddDbContext<AppDbContext>((sp, options) =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    var cs = config.GetConnectionString("Default")
+             ?? throw new InvalidOperationException("ConnectionStrings:Default is not configured.");
+
+    if (IsSqlite(config))
+    {
+        options.UseSqlite(cs);
+    }
+    else
+    {
+        // Retries cover the free serverless database waking up after auto-pause
+        options.UseSqlServer(cs, sql => sql.EnableRetryOnFailure(
+            maxRetryCount: 6,
+            maxRetryDelay: TimeSpan.FromSeconds(15),
+            errorNumbersToAdd: null));
+    }
+});
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+// Create or upgrade the database at startup (fine for a single-instance learning app)
+using (var scope = app.Services.CreateScope())
 {
-    app.MapOpenApi();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+    if (IsSqlite(app.Configuration))
+    {
+        var csb = new SqliteConnectionStringBuilder(db.Database.GetConnectionString());
+        if (!string.IsNullOrEmpty(csb.DataSource) && csb.DataSource != ":memory:")
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(csb.DataSource))!);
+        }
+
+        db.Database.EnsureCreated();   // local dev and tests: no migrations needed
+    }
+    else
+    {
+        db.Database.Migrate();         // Azure SQL: apply the real migrations
+    }
 }
 
-app.UseHttpsRedirection();
+// API docs: on in Development, or anywhere EnableApiDocs=true
+var enableDocs = app.Environment.IsDevelopment()
+                 || app.Configuration.GetValue<bool>("EnableApiDocs");
 
-var summaries = new[]
+if (enableDocs)
 {
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
+    app.MapOpenApi();
+    app.MapScalarApiReference();
+}
 
-app.MapGet("/weatherforecast", () =>
+app.MapGet("/", () => enableDocs ? Results.Redirect("/scalar") : Results.Ok("NewApi is running"))
+   .ExcludeFromDescription();
+
+app.MapHealthChecks("/health").ExcludeFromDescription();
+
+// ---------- Todos ----------
+var todos = app.MapGroup("/api/todos").WithTags("Todos");
+
+todos.MapGet("/", async (AppDbContext db) =>
 {
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
+    var items = await db.Todos.AsNoTracking()
+        .OrderBy(t => t.Id)
+        .Select(t => new TodoResponse(t.Id, t.Title, t.IsDone, t.CreatedAtUtc))
+        .ToListAsync();
+
+    return Results.Ok(items);
+});
+
+todos.MapGet("/{id:int}", async (int id, AppDbContext db) =>
+{
+    var t = await db.Todos.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
+    return t is null ? Results.NotFound() : Results.Ok(new TodoResponse(t.Id, t.Title, t.IsDone, t.CreatedAtUtc));
+});
+
+todos.MapPost("/", async (CreateTodoRequest req, AppDbContext db, TimeProvider clock) =>
+{
+    var title = req.Title?.Trim() ?? "";
+    if (title.Length is 0 or > 200)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["title"] = ["Title is required and must be at most 200 characters."]
+        });
+    }
+
+    var todo = new TodoItem { Title = title, CreatedAtUtc = clock.GetUtcNow() };
+    db.Todos.Add(todo);
+    await db.SaveChangesAsync();
+
+    return Results.Created($"/api/todos/{todo.Id}",
+        new TodoResponse(todo.Id, todo.Title, todo.IsDone, todo.CreatedAtUtc));
+});
+
+todos.MapDelete("/{id:int}", async (int id, AppDbContext db) =>
+{
+    var todo = await db.Todos.FirstOrDefaultAsync(x => x.Id == id);
+    if (todo is null) return Results.NotFound();
+
+    db.Todos.Remove(todo);
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+});
 
 app.Run();
 
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
+public record CreateTodoRequest(string? Title);
+public record TodoResponse(int Id, string Title, bool IsDone, DateTimeOffset CreatedAtUtc);
+
+// Lets the test project start the app with WebApplicationFactory
+public partial class Program;
