@@ -121,20 +121,22 @@ jobs:
         run: |
           set -e
           BASE="${{ env.AZURE_WEBAPP_URL_STAGING }}"
+          BASE="${BASE%/}"
           EXPECTED="1.0.${{ github.run_number }}"
+          echo "Testing $BASE, expecting version $EXPECTED"
 
-          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/health"
-          echo
-          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/health/ready"
-          echo
-          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/api/todos"
-          echo
+          for path in /health /health/ready /api/todos; do
+            curl --fail --silent --show-error --location \
+              --retry 10 --retry-delay 15 --retry-all-errors \
+              --output /dev/null --write-out "$path -> HTTP %{http_code}\n" \
+              "$BASE$path"
+          done
 
-          # The app restarts after deploy, so the old version may answer briefly. Wait for the new one.
+          # The app restarts after deploy, so the old version may answer briefly.
           for i in $(seq 1 12); do
-            ACTUAL=$(curl --silent --show-error "$BASE/version" || true)
-            echo "Attempt $i: $ACTUAL"
-            if echo "$ACTUAL" | grep -q "$EXPECTED"; then
+            RESPONSE=$(curl --silent --location --write-out " [HTTP %{http_code}]" "$BASE/version" || true)
+            echo "Attempt $i: $RESPONSE"
+            if echo "$RESPONSE" | grep -q "$EXPECTED"; then
               echo "Staging smoke tests passed. Running version $EXPECTED."
               exit 0
             fi
@@ -178,19 +180,21 @@ jobs:
         run: |
           set -e
           BASE="${{ env.AZURE_WEBAPP_URL }}"
+          BASE="${BASE%/}"
           EXPECTED="1.0.${{ github.run_number }}"
+          echo "Testing $BASE, expecting version $EXPECTED"
 
-          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/health"
-          echo
-          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/health/ready"
-          echo
-          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/api/todos"
-          echo
+          for path in /health /health/ready /api/todos; do
+            curl --fail --silent --show-error --location \
+              --retry 10 --retry-delay 15 --retry-all-errors \
+              --output /dev/null --write-out "$path -> HTTP %{http_code}\n" \
+              "$BASE$path"
+          done
 
           for i in $(seq 1 12); do
-            ACTUAL=$(curl --silent --show-error "$BASE/version" || true)
-            echo "Attempt $i: $ACTUAL"
-            if echo "$ACTUAL" | grep -q "$EXPECTED"; then
+            RESPONSE=$(curl --silent --location --write-out " [HTTP %{http_code}]" "$BASE/version" || true)
+            echo "Attempt $i: $RESPONSE"
+            if echo "$RESPONSE" | grep -q "$EXPECTED"; then
               echo "Production smoke tests passed. Running version $EXPECTED."
               exit 0
             fi
