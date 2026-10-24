@@ -121,21 +121,27 @@ jobs:
         run: |
           set -e
           BASE="${{ env.AZURE_WEBAPP_URL_STAGING }}"
+          EXPECTED="1.0.${{ github.run_number }}"
 
-          # Liveness. Retries cover the free tier cold start
-          curl --fail --silent --show-error \
-            --retry 10 --retry-delay 15 --retry-all-errors \
-            "$BASE/health"
+          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/health"
+          echo
+          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/health/ready"
+          echo
+          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/api/todos"
           echo
 
-          # Database check. Listing todos needs a working database connection,
-          # and the retries cover the free database waking up
-          curl --fail --silent --show-error \
-            --retry 10 --retry-delay 15 --retry-all-errors \
-            "$BASE/api/todos"
-          echo
-
-          echo "Staging smoke tests passed."
+          # The app restarts after deploy, so the old version may answer briefly. Wait for the new one.
+          for i in $(seq 1 12); do
+            ACTUAL=$(curl --silent --show-error "$BASE/version" || true)
+            echo "Attempt $i: $ACTUAL"
+            if echo "$ACTUAL" | grep -q "$EXPECTED"; then
+              echo "Staging smoke tests passed. Running version $EXPECTED."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Expected version $EXPECTED was not live."
+          exit 1
 
   deploy-production:
     needs: deploy-staging
@@ -172,18 +178,26 @@ jobs:
         run: |
           set -e
           BASE="${{ env.AZURE_WEBAPP_URL }}"
+          EXPECTED="1.0.${{ github.run_number }}"
 
-          curl --fail --silent --show-error \
-            --retry 10 --retry-delay 15 --retry-all-errors \
-            "$BASE/health"
+          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/health"
+          echo
+          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/health/ready"
+          echo
+          curl --fail --silent --show-error --retry 10 --retry-delay 15 --retry-all-errors "$BASE/api/todos"
           echo
 
-          curl --fail --silent --show-error \
-            --retry 10 --retry-delay 15 --retry-all-errors \
-            "$BASE/api/todos"
-          echo
-
-          echo "Production smoke tests passed."
+          for i in $(seq 1 12); do
+            ACTUAL=$(curl --silent --show-error "$BASE/version" || true)
+            echo "Attempt $i: $ACTUAL"
+            if echo "$ACTUAL" | grep -q "$EXPECTED"; then
+              echo "Production smoke tests passed. Running version $EXPECTED."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Expected version $EXPECTED was not live."
+          exit 1
 
   release:
     needs: deploy-production

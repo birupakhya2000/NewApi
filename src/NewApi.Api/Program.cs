@@ -1,3 +1,5 @@
+using System.Reflection;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -7,6 +9,17 @@ using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Telemetry is enabled only when a connection string is configured (Azure app setting
+// APPLICATIONINSIGHTS_CONNECTION_STRING). Locally and in tests there is none, so we skip it.
+var appInsightsConnectionString =
+    builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]
+    ?? builder.Configuration["ApplicationInsights:ConnectionString"];
+
+if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
+{
+    builder.Services.AddApplicationInsightsTelemetry();
+}
+builder.Services.AddProblemDetails();
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHealthChecks();
@@ -36,6 +49,9 @@ builder.Services.AddDbContext<AppDbContext>((sp, options) =>
 });
 
 var app = builder.Build();
+
+app.UseExceptionHandler();
+app.UseStatusCodePages();
 
 // Create or upgrade the database at startup (fine for a single-instance learning app)
 using (var scope = app.Services.CreateScope())
@@ -72,6 +88,19 @@ app.MapGet("/", () => enableDocs ? Results.Redirect("/scalar") : Results.Ok("New
    .ExcludeFromDescription();
 
 app.MapHealthChecks("/health").ExcludeFromDescription();
+app.MapGet("/health/ready", async (AppDbContext db, CancellationToken ct) =>
+        await db.Database.CanConnectAsync(ct)
+            ? Results.Ok(new { status = "Ready" })
+            : Results.Problem("Database unavailable", statusCode: StatusCodes.Status503ServiceUnavailable))
+    .ExcludeFromDescription();
+
+// Version: which build is running? The pipeline stamps 1.0.<run_number>+<commit sha>.
+app.MapGet("/version", () =>
+{
+    var version = typeof(Program).Assembly
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
+    return Results.Ok(new { version });
+}).ExcludeFromDescription();
 
 // ---------- Todos ----------
 var todos = app.MapGroup("/api/todos").WithTags("Todos");
