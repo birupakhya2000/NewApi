@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: "nuget"
+    directories:
+      - "/src/NewApi.Api"
+      - "/tests/NewApi.Tests"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      microsoft-packages:
+        patterns:
+          - "Microsoft.*"
+          - "System.*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
