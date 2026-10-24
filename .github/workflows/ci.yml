@@ -1,6 +1,6 @@
-name : CI/CD
+name: CI/CD
 
-on: 
+on:
   push:
     branches: [ main ]
   pull_request:
@@ -22,7 +22,6 @@ env:
   AZURE_WEBAPP_NAME_STAGING: 'newapi-birupakhya-staging'
   AZURE_WEBAPP_URL_STAGING: 'newapi-birupakhya-staging-h0dac4hjg4d6byaz.centralindia-01.azurewebsites.net'
 
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -35,7 +34,7 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Cache NuGet Packages
+      - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
@@ -43,15 +42,15 @@ jobs:
           restore-keys: |
             nuget-${{ runner.os }}-
 
-      - name: Restore dependencies
+      - name: Restore
         run: dotnet restore
 
-      - name: Check code formatting
+      - name: Check formatting
         run: dotnet format NewApi.slnx --verify-no-changes --no-restore
 
       - name: Build
-        run: > 
-          dotnet build NewApi.slnx --configuration Release --no-restore
+        run: >
+          dotnet build --configuration Release --no-restore
           -p:Version=1.0.${{ github.run_number }}
           -p:InformationalVersion=1.0.${{ github.run_number }}+${{ github.sha }}
 
@@ -86,16 +85,16 @@ jobs:
         with:
           name: api-package
           path: ./publish
-        
+
   deploy-staging:
     needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       id-token: write
+      contents: read
     environment:
-      name: staging
+      name: Staging
       url: ${{ env.AZURE_WEBAPP_URL_STAGING }}
 
     steps:
@@ -105,20 +104,20 @@ jobs:
           name: api-package
           path: ./publish
 
-      - name: Azure Login (OIDC)
+      - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to Azure Web App (Staging)
-        uses: azure/webapps-deploy@v2
+      - name: Deploy to Staging
+        uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME_STAGING }}
           package: ./publish
 
-      - name: Smoke Test Staging
+      - name: Smoke test (Staging)
         run: |
           set -e
           BASE="${{ env.AZURE_WEBAPP_URL_STAGING }}"
@@ -138,16 +137,15 @@ jobs:
 
           echo "Staging smoke tests passed."
 
-
   deploy-production:
     needs: deploy-staging
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       id-token: write
+      contents: read
     environment:
-      name: production
+      name: Production
       url: ${{ env.AZURE_WEBAPP_URL }}
 
     steps:
@@ -157,32 +155,29 @@ jobs:
           name: api-package
           path: ./publish
 
-      - name: Azure Login (OIDC)
+      - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to Azure Web App (Production)
-        uses: azure/webapps-deploy@v2
+      - name: Deploy to Production
+        uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           package: ./publish
 
-      - name: Smoke Test Production
+      - name: Smoke test (Production)
         run: |
           set -e
           BASE="${{ env.AZURE_WEBAPP_URL }}"
 
-          # Liveness. Retries cover the free tier cold start
           curl --fail --silent --show-error \
             --retry 10 --retry-delay 15 --retry-all-errors \
             "$BASE/health"
           echo
 
-          # Database check. Listing todos needs a working database connection,
-          # and the retries cover the free database waking up
           curl --fail --silent --show-error \
             --retry 10 --retry-delay 15 --retry-all-errors \
             "$BASE/api/todos"
@@ -194,7 +189,7 @@ jobs:
     needs: deploy-production
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Download package
