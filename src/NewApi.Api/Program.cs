@@ -1,6 +1,8 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+
 using NewApi.Api.Data;
+
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
