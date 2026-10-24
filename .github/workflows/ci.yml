@@ -17,6 +17,11 @@ concurrency:
 
 env:
   DOTNET_VERSION: '10.0.x'
+  AZURE_WEBAPP_NAME: 'newapi-birupakhya' 
+  AZURE_WEBAPP_URL: 'newapi-birupakhya-f6b5crc2g4eecwbb.centralindia-01.azurewebsites.net'
+  AZURE_WEBAPP_NAME_STAGING: 'newapi-birupakhya-staging'
+  AZURE_WEBAPP_URL_STAGING: 'newapi-birupakhya-staging-h0dac4hjg4d6byaz.centralindia-01.azurewebsites.net'
+
 
 jobs:
   build:
@@ -82,3 +87,176 @@ jobs:
           name: api-package
           path: ./publish
         
+  deploy-staging:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: staging
+      url: ${{ env.AZURE_WEBAPP_URL_STAGING }}
+
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: api-package
+          path: ./publish
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Web App (Staging)
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME_STAGING }}
+          package: ./publish
+
+      - name: Smoke Test Staging
+        run: |
+          set -e
+          BASE="${{ env.AZURE_WEBAPP_URL_STAGING }}"
+
+          # Liveness. Retries cover the free tier cold start
+          curl --fail --silent --show-error \
+            --retry 10 --retry-delay 15 --retry-all-errors \
+            "$BASE/health"
+          echo
+
+          # Database check. Listing todos needs a working database connection,
+          # and the retries cover the free database waking up
+          curl --fail --silent --show-error \
+            --retry 10 --retry-delay 15 --retry-all-errors \
+            "$BASE/api/todos"
+          echo
+
+          echo "Staging smoke tests passed."
+
+
+  deploy-production:
+    needs: deploy-staging
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: production
+      url: ${{ env.AZURE_WEBAPP_URL }}
+
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: api-package
+          path: ./publish
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Web App (Production)
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          package: ./publish
+
+      - name: Smoke Test Production
+        run: |
+          set -e
+          BASE="${{ env.AZURE_WEBAPP_URL }}"
+
+          # Liveness. Retries cover the free tier cold start
+          curl --fail --silent --show-error \
+            --retry 10 --retry-delay 15 --retry-all-errors \
+            "$BASE/health"
+          echo
+
+          # Database check. Listing todos needs a working database connection,
+          # and the retries cover the free database waking up
+          curl --fail --silent --show-error \
+            --retry 10 --retry-delay 15 --retry-all-errors \
+            "$BASE/api/todos"
+          echo
+
+          echo "Production smoke tests passed."
+
+  release:
+    needs: deploy-production
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: api-package
+          path: ./publish
+
+      - name: Zip package
+        run: cd publish && zip -qr ../api-package.zip .
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          gh release create "v$VERSION" api-package.zip \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "v$VERSION" \
+            --generate-notes
+
+  rollback:
+    needs: deploy-production
+    if: always() && needs.deploy-production.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: Production
+      url: ${{ env.AZURE_WEBAPP_URL }}
+
+    steps:
+      - name: Download the last released package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir rollback
+          gh release download \
+            --repo "${{ github.repository }}" \
+            --pattern "api-package.zip" \
+            --dir rollback || { echo "No previous release exists, nothing to roll back to."; exit 1; }
+          unzip -q rollback/api-package.zip -d publish
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Redeploy previous version to Production
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          package: ./publish
+
+      - name: Verify rollback
+        run: |
+          curl --fail --silent --show-error \
+            --retry 10 --retry-delay 15 --retry-all-errors \
+            "${{ env.AZURE_WEBAPP_URL }}/health"
+          echo
+          echo "### Production was rolled back to the previous release" >> "$GITHUB_STEP_SUMMARY"
