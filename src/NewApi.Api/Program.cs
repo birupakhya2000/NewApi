@@ -1,5 +1,7 @@
 using System.Reflection;
+using System.Threading.RateLimiting;
 
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -20,6 +22,20 @@ if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
     builder.Services.AddApplicationInsightsTelemetry();
 }
 builder.Services.AddProblemDetails();
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // 100 requests per minute per client IP, across the whole API
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1)
+            }));
+});
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHealthChecks();
@@ -52,7 +68,7 @@ var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();
-
+app.UseRateLimiter();
 // Create or upgrade the database at startup (fine for a single-instance learning app)
 using (var scope = app.Services.CreateScope())
 {
